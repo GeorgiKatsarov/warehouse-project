@@ -1,41 +1,117 @@
+using Microsoft.EntityFrameworkCore;
+using Warehouse.Api.Data;
+using Warehouse.Api.Models;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.OpenApi.Models;
+using Microsoft.Extensions.Configuration;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Hosting;
+using Swashbuckle.AspNetCore.SwaggerUI;
+using System.Threading.Tasks;
+using System.Linq;
+using System.Collections.Generic;
+using System.Net.Http;
+using System.Net;
+using System.Text.Json;
+using System.ComponentModel.DataAnnotations;
+using System.Threading;
+
+
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
-// Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
-builder.Services.AddOpenApi();
+// Service configuration
+ConfigureServices(builder.Services, builder.Configuration);
 
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
-if (app.Environment.IsDevelopment())
-{
-    app.MapOpenApi();
-}
+// Middleware configuration
+ConfigureMiddleware(app);
 
-app.UseHttpsRedirection();
-
-var summaries = new[]
-{
-    "Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy", "Hot", "Sweltering", "Scorching"
-};
-
-app.MapGet("/weatherforecast", () =>
-{
-    var forecast =  Enumerable.Range(1, 5).Select(index =>
-        new WeatherForecast
-        (
-            DateOnly.FromDateTime(DateTime.Now.AddDays(index)),
-            Random.Shared.Next(-20, 55),
-            summaries[Random.Shared.Next(summaries.Length)]
-        ))
-        .ToArray();
-    return forecast;
-})
-.WithName("GetWeatherForecast");
+// API endpoints
+ConfigureEndpoints(app);
 
 app.Run();
 
-record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)
+// Service configuration method
+void ConfigureServices(IServiceCollection services, IConfiguration configuration)
 {
-    public int TemperatureF => 32 + (int)(TemperatureC / 0.5556);
+    services.AddEndpointsApiExplorer();
+    services.AddSwaggerGen();
+    
+    services.AddDbContext<WarehouseDbContext>(options =>
+        options.UseSqlServer(configuration.GetConnectionString("WarehouseDb")));
+    
+    services.AddCors(options =>
+    {
+        options.AddPolicy("AllowAngularApp",
+            builder => builder
+                .WithOrigins("http://localhost:4200")
+                .AllowAnyMethod()
+                .AllowAnyHeader());
+    });
+}
+
+// Middleware configuration method
+void ConfigureMiddleware(WebApplication app)
+{
+    if (app.Environment.IsDevelopment())
+    {
+        app.UseSwagger();
+        app.UseSwaggerUI(options =>
+        {
+            options.SwaggerEndpoint("/swagger/v1/swagger.json", "Warehouse API V1");
+            options.RoutePrefix = string.Empty;
+            options.DocumentTitle = "Warehouse API Documentation";
+        });
+    }
+
+    app.UseHttpsRedirection();
+    app.UseCors("AllowAngularApp");
+}
+
+// API endpoints configuration method
+void ConfigureEndpoints(WebApplication app)
+{
+    app.MapGet("/api/products", async (WarehouseDbContext db) =>
+        await db.Products.ToListAsync());
+
+    app.MapGet("/api/products/{id}", async (int id, WarehouseDbContext db) =>
+        await db.Products.FindAsync(id)
+            is Product product
+            ? Results.Ok(product)
+            : Results.NotFound());
+
+    app.MapPost("/api/products", async (Product product, WarehouseDbContext db) =>
+    {
+        db.Products.Add(product);
+        await db.SaveChangesAsync();
+        return Results.Created($"/api/products/{product.Id}", product);
+    });
+
+    app.MapPut("/api/products/{id}", async (int id, Product inputProduct, WarehouseDbContext db) =>
+    {
+        var product = await db.Products.FindAsync(id);
+        if (product is null) return Results.NotFound();
+        
+        product.Name = inputProduct.Name;
+        product.Description = inputProduct.Description;
+        product.Price = inputProduct.Price;
+        product.SKU = inputProduct.SKU;
+        product.QuantityInStock = inputProduct.QuantityInStock;
+        
+        await db.SaveChangesAsync();
+        return Results.NoContent();
+    });
+
+    app.MapDelete("/api/products/{id}", async (int id, WarehouseDbContext db) =>
+    {
+        var product = await db.Products.FindAsync(id);
+        if (product is null) return Results.NotFound();
+        
+        db.Products.Remove(product);
+        await db.SaveChangesAsync();
+        return Results.Ok(product);
+    });
 }
